@@ -1,5 +1,6 @@
-# instana-prep-setup
+# Instana Preparation Setup
 
+## 1.1. Prepare the Server
 ```bash
 #!/bin/bash
 # Instana Storage Setup Script
@@ -86,4 +87,129 @@ echo "Verification commands:"
 echo "  df -h | grep instana"
 echo "  cat /etc/fstab | grep instana"
 echo ""
+```
+
+## 1.2. Install Stanctl 
+```bash
+#!/bin/bash
+# Instana Repository Setup Script with Backup
+# Compatible with Debian/Ubuntu
+
+set -euo pipefail
+
+#======================================
+# CONFIGURATION VARIABLES
+#======================================
+DOWNLOAD_KEY="${DOWNLOAD_KEY:-}"           # Set via environment or edit here
+BACKUP_DIR="/root/instana_backup_$(date +%Y%m%d_%H%M%S)"
+REPO_URL="https://artifact-public.instana.io/artifactory"
+REPO_FILE="/etc/apt/sources.list.d/instana-product.list"
+AUTH_FILE="/etc/apt/auth.conf"
+KEYRING_FILE="/usr/share/keyrings/instana-archive-keyring.gpg"
+
+#======================================
+# FUNCTIONS
+#======================================
+log() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
+}
+
+error_exit() {
+    log "ERROR: $1"
+    exit 1
+}
+
+backup_file() {
+    local file=$1
+    if [ -f "$file" ]; then
+        local backup_path="$BACKUP_DIR/$(basename $file)"
+        cp -p "$file" "$backup_path"
+        log "✓ Backed up: $file → $backup_path"
+    fi
+}
+
+rollback() {
+    log "⚠️  Rolling back changes..."
+    if [ -d "$BACKUP_DIR" ]; then
+        [ -f "$BACKUP_DIR/$(basename $REPO_FILE)" ] && cp -p "$BACKUP_DIR/$(basename $REPO_FILE)" "$REPO_FILE"
+        [ -f "$BACKUP_DIR/$(basename $AUTH_FILE)" ] && cp -p "$BACKUP_DIR/$(basename $AUTH_FILE)" "$AUTH_FILE"
+        [ -f "$BACKUP_DIR/$(basename $KEYRING_FILE)" ] && cp -p "$BACKUP_DIR/$(basename $KEYRING_FILE)" "$KEYRING_FILE"
+        log "✓ Rollback completed"
+    fi
+    exit 1
+}
+
+#======================================
+# MAIN SCRIPT
+#======================================
+trap rollback ERR
+
+log "=== Instana Repository Setup ==="
+
+# Validate root
+if [ "$EUID" -ne 0 ]; then 
+    error_exit "This script must be run as root"
+fi
+
+# Validate DOWNLOAD_KEY
+if [ -z "$DOWNLOAD_KEY" ]; then
+    read -sp "Enter Instana Download Key: " DOWNLOAD_KEY
+    echo
+    if [ -z "$DOWNLOAD_KEY" ]; then
+        error_exit "DOWNLOAD_KEY is required"
+    fi
+fi
+
+log "Download key: ${DOWNLOAD_KEY:0:10}...${DOWNLOAD_KEY: -10}"
+
+# Create backup directory
+log ""
+log "[1/6] Creating backup directory..."
+mkdir -p "$BACKUP_DIR"
+log "✓ Backup directory: $BACKUP_DIR"
+
+# Backup existing files
+log ""
+log "[2/6] Backing up existing files..."
+backup_file "$REPO_FILE"
+backup_file "$AUTH_FILE"
+backup_file "$KEYRING_FILE"
+
+# Configure repository
+log ""
+log "[3/6] Configuring Instana repository..."
+echo "deb [signed-by=$KEYRING_FILE] $REPO_URL/rel-debian-public-virtual generic main" > "$REPO_FILE"
+log "✓ Repository configured: $REPO_FILE"
+
+# Configure authentication
+log ""
+log "[4/6] Configuring authentication..."
+cat > "$AUTH_FILE" << EOF
+machine artifact-public.instana.io
+  login _
+  password $DOWNLOAD_KEY
+EOF
+chmod 600 "$AUTH_FILE"
+log "✓ Authentication configured: $AUTH_FILE"
+
+# Download and install GPG key
+log ""
+log "[5/6] Installing GPG keyring..."
+wget -nv -O- --user=_ --password="$DOWNLOAD_KEY" \
+    "$REPO_URL/api/security/keypair/public/repositories/rel-debian-public-virtual" \
+    | gpg --dearmor > "$KEYRING_FILE"
+log "✓ GPG keyring installed: $KEYRING_FILE"
+
+# Update and install
+log ""
+log "[6/6] Installing stanctl..."
+apt update -y
+apt install -y stanctl
+
+log ""
+log "=== Installation Complete ==="
+log "Backup location: $BACKUP_DIR"
+log "Installed packages:"
+dpkg -l | grep stanctl || true
+log ""
 ```
